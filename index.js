@@ -29,13 +29,49 @@ function tunnelSnippet(token) {
   ];
 }
 
+// Cho phép origin của trang cloud gọi API TubeCLI từ browser (origin guard):
+// ghi systemd drop-in rồi restart service `tubecli`.
+function originSnippet(hosts) {
+  if (!hosts) return [];
+  const safe = String(hosts).replace(/[^a-zA-Z0-9.,:-]/g, '');
+  return [
+    '# --- Origin allowlist cho trang cloud ---',
+    '$SUDO mkdir -p /etc/systemd/system/tubecli.service.d',
+    `printf '[Service]\\nEnvironment=TUBECLI_ALLOWED_ORIGIN_HOSTS=${safe}\\n' | $SUDO tee /etc/systemd/system/tubecli.service.d/cloud.conf >/dev/null`,
+    '$SUDO systemctl daemon-reload || true',
+    '$SUDO systemctl restart tubecli || true',
+  ];
+}
+
+// Bảo đảm mật khẩu TubeCLI đã đổi khỏi mặc định. TUBECLI_PASSWORD env được
+// `tubecli init --server` áp dụng sẵn; đoạn này là lưới an toàn cho bản cũ:
+// nếu còn login được bằng 123456 thì đổi qua API loopback. Chạy trong subshell
+// `set +x` để mật khẩu KHÔNG lọt vào log cài đặt.
+function passwordSnippet(hasPassword) {
+  if (!hasPassword) return [];
+  return [
+    '# --- Xoay mật khẩu khỏi mặc định (log không chứa mật khẩu) ---',
+    `for i in $(seq 1 30); do curl -fs http://127.0.0.1:${TUBECLI_PORT}/api/v1/health >/dev/null 2>&1 && break; sleep 2; done`,
+    `( set +x; CK=$(mktemp); ` +
+      `CODE=$(curl -s -o /dev/null -w "%{http_code}" -c "$CK" -X POST http://127.0.0.1:${TUBECLI_PORT}/api/v1/auth/login -H "Content-Type: application/json" -d '{"password":"123456"}'); ` +
+      `if [ "$CODE" = "200" ]; then ` +
+        `curl -s -o /dev/null -b "$CK" -X POST http://127.0.0.1:${TUBECLI_PORT}/api/v1/auth/password -H "Content-Type: application/json" ` +
+        `-d "{\\"current_password\\":\\"123456\\",\\"new_password\\":\\"$TUBECLI_PASSWORD\\"}" && echo "[pw] rotated via api"; ` +
+      `else echo "[pw] default refused - env password da ap dung"; fi; rm -f "$CK" )`,
+  ];
+}
+
 // Lệnh cài: script chính thức 1 dòng, LUÔN chạy non-interactive (bỏ mọi bước
 // hỏi bàn phím như "Choose language") — nếu không sẽ treo tới timeout.
-function buildInstallCommand(lang, tunnelToken) {
+function buildInstallCommand(lang, tunnelToken, tubecliPassword, originHosts) {
   const l = lang === 'en' ? 'en' : 'vi';
   // Nhiều máy cloud không cho root SSH → dùng ubuntu + sudo. $SUDO tự rỗng khi là root.
   const SUDO = 'SUDO=$([ "$(id -u)" = 0 ] && echo "" || echo "sudo")';
+  // Mật khẩu chỉ chứa [A-Za-z0-9] (genPassword phía worker) nhưng vẫn lọc lại cho chắc.
+  const pw = String(tubecliPassword || '').replace(/[^A-Za-z0-9._-]/g, '');
   return [
+    // Export TRƯỚC `set -x` để mật khẩu không bị echo vào install_log
+    pw ? `export TUBECLI_PASSWORD='${pw}'` : 'true',
     'set -x',
     'export DEBIAN_FRONTEND=noninteractive',
     'export TUBECLI_NONINTERACTIVE=1',
@@ -44,10 +80,13 @@ function buildInstallCommand(lang, tunnelToken) {
     'for i in $(seq 1 30); do $SUDO fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; echo "cho apt lock..."; sleep 5; done',
     '$SUDO apt-get update -y || true',
     '$SUDO apt-get install -y curl || true',
-    // Cài TubeCLI — non-interactive + ngôn ngữ cố định
+    // Cài TubeCLI — non-interactive + ngôn ngữ cố định. TUBECLI_PASSWORD đã export
+    // ở trên nên truyền xuyên qua install.sh → `tubecli init --server` tự áp dụng.
     `curl -fsSL https://raw.githubusercontent.com/tubecreate/tubecli/main/install.sh | bash -s -- --non-interactive --lang ${l}`,
     // Mở firewall nếu có ufw
     `command -v ufw >/dev/null 2>&1 && $SUDO ufw allow ${TUBECLI_PORT}/tcp || true`,
+    ...originSnippet(originHosts),
+    ...passwordSnippet(!!pw),
     ...tunnelSnippet(tunnelToken),
     `echo "===INSTALL_DONE==="`,
   ].join('\n');
@@ -116,16 +155,17 @@ async function runJob(job) {
   console.log(`[job ${job.ref}] Bắt đầu (${mode}) trên ${job.ip}`);
   const command = mode === 'tunnel'
     ? buildTunnelCommand(job.tunnel_token)
-    : buildInstallCommand(job.lang, job.tunnel_token);
+    : buildInstallCommand(job.lang, job.tunnel_token, job.tubecli_password, job.origin_hosts);
   const result = await sshExecWithRetry({ ...job, command });
 
   const tubecliUrl = `http://${job.ip}:${TUBECLI_PORT}`;
-  // Xác minh TubeCLI đã lên (tối đa 2 phút) — bỏ qua với mode tunnel
+  // Xác minh TubeCLI đã lên (tối đa 2 phút) — bỏ qua với mode tunnel.
+  // /api/v1/health là endpoint tồn tại thật và được miễn auth.
   let alive = mode === 'tunnel';
   if (result.ok && mode !== 'tunnel') {
     for (let i = 0; i < 12; i++) {
       try {
-        const res = await fetch(`${tubecliUrl}/api/v1/status`, { signal: AbortSignal.timeout(5000) });
+        const res = await fetch(`${tubecliUrl}/api/v1/health`, { signal: AbortSignal.timeout(5000) });
         if (res.ok) { alive = true; break; }
       } catch {}
       await new Promise((r) => setTimeout(r, 10000));
