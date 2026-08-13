@@ -101,12 +101,17 @@ async function runJob(job) {
     }
   }
 
+  // Thành công = install.sh chạy trọn (===INSTALL_DONE===). Việc cổng 5295 có
+  // truy cập được từ ngoài chỉ là cảnh báo — firewall được mở lúc thuê máy và
+  // có thể cần vài giây để áp dụng.
   const payload = {
     secret: SECRET,
     ref: job.ref,
-    ok: result.ok && alive,
+    ok: result.ok,
     tubecli_url: result.ok ? tubecliUrl : '',
-    log: result.output.slice(-18000) + (result.ok && !alive ? '\n[provisioner] Cài xong nhưng chưa thấy TubeCLI phản hồi trên cổng ' + TUBECLI_PORT : ''),
+    log: result.output.slice(-18000) + (result.ok && !alive
+      ? '\n[provisioner] Lưu ý: chưa xác nhận cổng ' + TUBECLI_PORT + ' từ bên ngoài. Nếu không mở được dashboard, kiểm tra firewall/security group của VPS đã mở TCP ' + TUBECLI_PORT + '.'
+      : ''),
   };
 
   if (job.callback) {
