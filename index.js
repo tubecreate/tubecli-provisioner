@@ -67,15 +67,17 @@ function passwordSnippet(hasPassword) {
   return [
     '# --- Xoay mật khẩu khỏi mặc định (log không chứa mật khẩu) ---',
     `for i in $(seq 1 90); do curl -fs http://127.0.0.1:${TUBECLI_PORT}/api/v1/health >/dev/null 2>&1 && break; sleep 2; done`,
-    `( set +x; CK=$(mktemp); ` +
+    `( set +x; CK=$(mktemp); CK2=$(mktemp); ` +
+      // Jar RIÊNG cho mỗi lần login: nếu login mật khẩu mới thất bại (bản cũ) thì
+      // KHÔNG ghi đè jar 123456 dùng cho bước đổi mật khẩu bên dưới.
       `LC=$(curl -s -o /dev/null -w "%{http_code}" -c "$CK" -X POST http://127.0.0.1:${TUBECLI_PORT}/api/v1/auth/login -H "Content-Type: application/json" -d '{"password":"123456"}'); ` +
-      `NC=$(curl -s -o /dev/null -w "%{http_code}" -c "$CK" -X POST http://127.0.0.1:${TUBECLI_PORT}/api/v1/auth/login -H "Content-Type: application/json" -d "{\\"password\\":\\"$TUBECLI_PASSWORD\\"}"); ` +
+      `NC=$(curl -s -o /dev/null -w "%{http_code}" -c "$CK2" -X POST http://127.0.0.1:${TUBECLI_PORT}/api/v1/auth/login -H "Content-Type: application/json" -d "{\\"password\\":\\"$TUBECLI_PASSWORD\\"}"); ` +
       `if [ "$NC" = "200" ]; then echo "===PW_OK=== (env applied)"; ` +
       `elif [ "$LC" = "200" ]; then ` +
         `PC=$(curl -s -o /dev/null -w "%{http_code}" -b "$CK" -X POST http://127.0.0.1:${TUBECLI_PORT}/api/v1/auth/password -H "Content-Type: application/json" ` +
         `-d "{\\"current_password\\":\\"123456\\",\\"new_password\\":\\"$TUBECLI_PASSWORD\\"}"); ` +
         `if [ "$PC" = "200" ]; then echo "===PW_OK=== (rotated via api)"; else echo "===PW_FAIL=== (change http $PC)"; fi; ` +
-      `else echo "===PW_FAIL=== (login default http $LC, env http $NC)"; fi; rm -f "$CK" )`,
+      `else echo "===PW_FAIL=== (login default http $LC, env http $NC)"; fi; rm -f "$CK" "$CK2" )`,
   ];
 }
 
