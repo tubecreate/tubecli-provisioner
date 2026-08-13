@@ -13,9 +13,25 @@ if (!SECRET) {
   process.exit(1);
 }
 
+// Đoạn cài cloudflared tunnel (khi có token) — chạy như systemd service
+function tunnelSnippet(token) {
+  if (!token) return [];
+  return [
+    '# --- Cloudflare Tunnel ---',
+    'if ! command -v cloudflared >/dev/null 2>&1; then',
+    '  curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared',
+    '  $SUDO install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared',
+    'fi',
+    '$SUDO cloudflared service uninstall >/dev/null 2>&1 || true',
+    `$SUDO cloudflared service install ${token}`,
+    '$SUDO systemctl restart cloudflared || true',
+    'echo "===TUNNEL_DONE==="',
+  ];
+}
+
 // Lệnh cài: script chính thức 1 dòng, LUÔN chạy non-interactive (bỏ mọi bước
 // hỏi bàn phím như "Choose language") — nếu không sẽ treo tới timeout.
-function buildInstallCommand(lang) {
+function buildInstallCommand(lang, tunnelToken) {
   const l = lang === 'en' ? 'en' : 'vi';
   // Nhiều máy cloud không cho root SSH → dùng ubuntu + sudo. $SUDO tự rỗng khi là root.
   const SUDO = 'SUDO=$([ "$(id -u)" = 0 ] && echo "" || echo "sudo")';
@@ -32,6 +48,18 @@ function buildInstallCommand(lang) {
     `curl -fsSL https://raw.githubusercontent.com/tubecreate/tubecli/main/install.sh | bash -s -- --non-interactive --lang ${l}`,
     // Mở firewall nếu có ufw
     `command -v ufw >/dev/null 2>&1 && $SUDO ufw allow ${TUBECLI_PORT}/tcp || true`,
+    ...tunnelSnippet(tunnelToken),
+    `echo "===INSTALL_DONE==="`,
+  ].join('\n');
+}
+
+// Chỉ cài tunnel (cho server đã có TubeCLI, user bấm Generate Domain sau)
+function buildTunnelCommand(token) {
+  const SUDO = 'SUDO=$([ "$(id -u)" = 0 ] && echo "" || echo "sudo")';
+  return [
+    'set -x',
+    SUDO,
+    ...tunnelSnippet(token),
     `echo "===INSTALL_DONE==="`,
   ].join('\n');
 }
@@ -84,14 +112,17 @@ async function sshExecWithRetry(job, tries = 5) {
 }
 
 async function runJob(job) {
-  console.log(`[job ${job.ref}] Bắt đầu cài TubeCLI trên ${job.ip}`);
-  const command = buildInstallCommand(job.lang);
+  const mode = job.mode === 'tunnel' ? 'tunnel' : 'install';
+  console.log(`[job ${job.ref}] Bắt đầu (${mode}) trên ${job.ip}`);
+  const command = mode === 'tunnel'
+    ? buildTunnelCommand(job.tunnel_token)
+    : buildInstallCommand(job.lang, job.tunnel_token);
   const result = await sshExecWithRetry({ ...job, command });
 
   const tubecliUrl = `http://${job.ip}:${TUBECLI_PORT}`;
-  // Xác minh TubeCLI đã lên (tối đa 2 phút)
-  let alive = false;
-  if (result.ok) {
+  // Xác minh TubeCLI đã lên (tối đa 2 phút) — bỏ qua với mode tunnel
+  let alive = mode === 'tunnel';
+  if (result.ok && mode !== 'tunnel') {
     for (let i = 0; i < 12; i++) {
       try {
         const res = await fetch(`${tubecliUrl}/api/v1/status`, { signal: AbortSignal.timeout(5000) });
@@ -107,9 +138,10 @@ async function runJob(job) {
   const payload = {
     secret: SECRET,
     ref: job.ref,
+    mode,
     ok: result.ok,
     tubecli_url: result.ok ? tubecliUrl : '',
-    log: result.output.slice(-18000) + (result.ok && !alive
+    log: result.output.slice(-18000) + (result.ok && !alive && mode === 'install'
       ? '\n[provisioner] Lưu ý: chưa xác nhận cổng ' + TUBECLI_PORT + ' từ bên ngoài. Nếu không mở được dashboard, kiểm tra firewall/security group của VPS đã mở TCP ' + TUBECLI_PORT + '.'
       : ''),
   };
