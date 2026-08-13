@@ -1,0 +1,12 @@
+{
+  "name": "tubecli-provisioner",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0"
+  }
+}
