@@ -13,20 +13,25 @@ if (!SECRET) {
   process.exit(1);
 }
 
-// Lệnh cài: script chính thức 1 dòng + mở port + đảm bảo chạy nền
+// Lệnh cài: script chính thức 1 dòng, LUÔN chạy non-interactive (bỏ mọi bước
+// hỏi bàn phím như "Choose language") — nếu không sẽ treo tới timeout.
 function buildInstallCommand(lang) {
-  const langFlag = lang === 'en' ? ' -s -- --lang en' : '';
+  const l = lang === 'en' ? 'en' : 'vi';
+  // Nhiều máy cloud không cho root SSH → dùng ubuntu + sudo. $SUDO tự rỗng khi là root.
+  const SUDO = 'SUDO=$([ "$(id -u)" = 0 ] && echo "" || echo "sudo")';
   return [
     'set -x',
     'export DEBIAN_FRONTEND=noninteractive',
+    'export TUBECLI_NONINTERACTIVE=1',
+    SUDO,
     // Chờ apt lock (máy mới hay bận cloud-init)
-    'for i in $(seq 1 30); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; echo "cho apt lock..."; sleep 5; done',
-    'apt-get update -y || true',
-    'apt-get install -y curl || true',
-    // Cài TubeCLI bằng script chính thức
-    `curl -fsSL https://raw.githubusercontent.com/tubecreate/tubecli/main/install.sh | bash${langFlag}`,
+    'for i in $(seq 1 30); do $SUDO fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; echo "cho apt lock..."; sleep 5; done',
+    '$SUDO apt-get update -y || true',
+    '$SUDO apt-get install -y curl || true',
+    // Cài TubeCLI — non-interactive + ngôn ngữ cố định
+    `curl -fsSL https://raw.githubusercontent.com/tubecreate/tubecli/main/install.sh | bash -s -- --non-interactive --lang ${l}`,
     // Mở firewall nếu có ufw
-    `command -v ufw >/dev/null 2>&1 && ufw allow ${TUBECLI_PORT}/tcp || true`,
+    `command -v ufw >/dev/null 2>&1 && $SUDO ufw allow ${TUBECLI_PORT}/tcp || true`,
     `echo "===INSTALL_DONE==="`,
   ].join('\n');
 }
