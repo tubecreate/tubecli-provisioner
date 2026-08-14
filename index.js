@@ -250,10 +250,76 @@ async function runJob(job) {
   console.log(`[job ${job.ref}] Xong: ok=${payload.ok}`);
 }
 
+// ── Realtime stats: SSH đọc /proc một phát, tính CPU%/RAM/Disk ────────────────
+function parseStats(out) {
+  try {
+    const g = (re) => (out.match(re) || [])[1] || '';
+    const n1 = g(/S1:cpu\s+(.+)/).trim().split(/\s+/).map(Number);
+    const n2 = g(/S2:cpu\s+(.+)/).trim().split(/\s+/).map(Number);
+    const sum = (a) => a.reduce((x, y) => x + (y || 0), 0);
+    const t1 = sum(n1), t2 = sum(n2);
+    const i1 = (n1[3] || 0) + (n1[4] || 0), i2 = (n2[3] || 0) + (n2[4] || 0);
+    const dt = t2 - t1, di = i2 - i1;
+    const cpu = dt > 0 ? Math.max(0, Math.min(100, ((dt - di) / dt) * 100)) : 0;
+    const mem = g(/MEM:(.+)/);
+    const mt = Number((mem.match(/MemTotal\s+(\d+)/) || [])[1] || 0);
+    const ma = Number((mem.match(/MemAvailable\s+(\d+)/) || [])[1] || 0);
+    const memUsed = mt - ma;
+    const disk = g(/DISK:(.+)/).trim().split(/\s+/); // size used pct
+    return {
+      cpu: Math.round(cpu),
+      cores: Number(g(/CORES:(\d+)/) || 0),
+      mem_used_mb: Math.round(memUsed / 1024),
+      mem_total_mb: Math.round(mt / 1024),
+      mem_pct: mt > 0 ? Math.round((memUsed / mt) * 100) : 0,
+      disk_pct: Number(String(disk[2] || '0').replace('%', '')),
+      disk_used_gb: Math.round((Number(disk[1] || 0) / 1048576) * 10) / 10,
+      disk_total_gb: Math.round((Number(disk[0] || 0) / 1048576) * 10) / 10,
+    };
+  } catch (e) { return { error: 'parse: ' + e.message }; }
+}
+
+function sshStats({ ip, port, username, password }) {
+  return new Promise((resolve) => {
+    const conn = new Client();
+    let out = '', done = false;
+    const finish = (r) => { if (done) return; done = true; try { conn.end(); } catch {} resolve(r); };
+    const timer = setTimeout(() => finish({ error: 'timeout' }), 14000);
+    const cmd = "echo S1:$(head -1 /proc/stat); sleep 0.5; echo S2:$(head -1 /proc/stat); "
+      + "echo MEM:$(awk '/MemTotal|MemAvailable/{print $1,$2}' /proc/meminfo | tr '\\n' ' '); "
+      + "echo CORES:$(nproc); echo DISK:$(df -P / | awk 'NR==2{print $2,$3,$5}')";
+    conn.on('ready', () => {
+      conn.exec(cmd, (err, stream) => {
+        if (err) { clearTimeout(timer); return finish({ error: err.message }); }
+        stream.on('data', (d) => { out += d.toString(); });
+        stream.stderr.on('data', () => {});
+        stream.on('close', () => { clearTimeout(timer); finish(parseStats(out)); });
+      });
+    });
+    conn.on('error', (e) => { clearTimeout(timer); finish({ error: e.message }); });
+    conn.connect({ host: ip, port: Number(port) || 22, username: username || 'root', password, readyTimeout: 15000 });
+  });
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: true }));
+  }
+  if (req.method === 'POST' && req.url === '/stats') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 10000) req.destroy(); });
+    req.on('end', async () => {
+      try {
+        const job = JSON.parse(body);
+        if (job.secret !== SECRET) { res.writeHead(401); return res.end('unauthorized'); }
+        if (!job.ip || !job.password) { res.writeHead(400); return res.end('thiếu ip/password'); }
+        const st = await sshStats(job);
+        res.writeHead(st.error ? 502 : 200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(st));
+      } catch (e) { res.writeHead(400); res.end('bad json'); }
+    });
+    return;
   }
   if (req.method === 'POST' && req.url === '/install') {
     let body = '';
