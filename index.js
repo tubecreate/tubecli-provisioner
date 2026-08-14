@@ -101,6 +101,12 @@ function buildInstallCommand(lang, tunnelToken, tubecliPassword, originHosts) {
     'for i in $(seq 1 30); do $SUDO fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; echo "cho apt lock..."; sleep 5; done',
     '$SUDO apt-get update -y || true',
     '$SUDO apt-get install -y curl || true',
+    // Font cho trình duyệt (ShardX) — phủ đa ngôn ngữ để tránh chữ □ tofu:
+    // CJK (Nhật/Trung/Hàn) + emoji + Noto core (Ả Rập, Thái, Hebrew, Devanagari, Cyrillic…)
+    // + Thái/Ả Rập chuyên biệt + font phổ biến (Liberation ~ Arial/Times, DejaVu, FreeFont).
+    '$SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y '
+      + 'fonts-noto-cjk fonts-noto-color-emoji fonts-noto-core fonts-noto-ui-core '
+      + 'fonts-thai-tlwg fonts-kacst fonts-freefont-ttf fonts-liberation fonts-dejavu-core || true',
     // Cài TubeCLI — non-interactive + ngôn ngữ cố định. TUBECLI_PASSWORD đã export
     // ở trên nên truyền xuyên qua install.sh → `tubecli init --server` tự áp dụng.
     // Bắt exit code THẬT của bước cài (echo INSTALL_RC) để provisioner không báo
