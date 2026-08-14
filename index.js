@@ -262,8 +262,9 @@ function parseStats(out) {
     const dt = t2 - t1, di = i2 - i1;
     const cpu = dt > 0 ? Math.max(0, Math.min(100, ((dt - di) / dt) * 100)) : 0;
     const mem = g(/MEM:(.+)/);
-    const mt = Number((mem.match(/MemTotal\s+(\d+)/) || [])[1] || 0);
-    const ma = Number((mem.match(/MemAvailable\s+(\d+)/) || [])[1] || 0);
+    // /proc/meminfo dạng "MemTotal:  2035908 kB" — có dấu ':' nên dùng \D+ (không phải \s+)
+    const mt = Number((mem.match(/MemTotal\D+(\d+)/) || [])[1] || 0);
+    const ma = Number((mem.match(/MemAvailable\D+(\d+)/) || [])[1] || 0);
     const memUsed = mt - ma;
     const disk = g(/DISK:(.+)/).trim().split(/\s+/); // size used pct
     return {
