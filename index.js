@@ -13,9 +13,11 @@ if (!SECRET) {
   process.exit(1);
 }
 
-// Token tunnel chỉ [A-Za-z0-9_-] (base64url của Cloudflare) — lọc để không chèn shell.
+// Token tunnel cloudflared là base64 CHUẨN của JSON → chứa cả '+', '/', '='.
+// TUYỆT ĐỐI không strip mấy ký tự này (từng làm hỏng token → tunnel chết). Chỉ giữ
+// đúng bộ ký tự base64 (std + url); token được truyền trong dấu nháy đơn nên an toàn shell.
 function safeToken(token) {
-  return String(token || '').replace(/[^A-Za-z0-9_-]/g, '');
+  return String(token || '').replace(/[^A-Za-z0-9+/=_.-]/g, '');
 }
 
 // Đoạn cài cloudflared tunnel (khi có token) — chạy như systemd service.
@@ -32,10 +34,27 @@ function tunnelSnippet(token) {
     '  $SUDO install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared',
     'fi',
     'if ! command -v cloudflared >/dev/null 2>&1; then echo "[tunnel] CAI CLOUDFLARED THAT BAI"; else',
-    '  $SUDO cloudflared service uninstall >/dev/null 2>&1 || true',
-    // Token trong subshell không trace (set +x) — không lọt vào install_log
-    `  ( set +x; $SUDO cloudflared service install ${tok} ) >/dev/null 2>&1 && echo "[tunnel] service installed" || echo "[tunnel] SERVICE INSTALL FAIL"`,
+    // KHÔNG gỡ service đang chạy trước khi chắc chắn cài được bản mới — từng làm máy
+    // mất tunnel: uninstall xong install fail (lỗi bị nuốt) → trắng tay, domain 530.
+    // Thử cài đè trước; "already installed" thì restart là đủ (cùng tunnel = cùng token).
+    // Lỗi cloudflared ghi vào log (output của cloudflared không chứa token; dòng lệnh
+    // vẫn giấu token nhờ subshell set +x).
+    `  ( set +x; $SUDO cloudflared service install '${tok}' >/tmp/cf_install.log 2>&1 ) && echo "[tunnel] service installed" || {`,
+    '    if grep -qi "already.*installed" /tmp/cf_install.log; then',
+    '      echo "[tunnel] service da co san — restart la du"',
+    '    else',
+    '      echo "[tunnel] install lan 1 loi:"; cat /tmp/cf_install.log',
+    '      $SUDO cloudflared service uninstall >/dev/null 2>&1 || true',
+    '      $SUDO rm -f /etc/systemd/system/cloudflared.service /etc/systemd/system/cloudflared-update.service /etc/systemd/system/cloudflared-update.timer',
+    '      $SUDO systemctl daemon-reload || true',
+    '      sleep 2',
+    `      ( set +x; $SUDO cloudflared service install '${tok}' >/tmp/cf_install.log 2>&1 ) && echo "[tunnel] service installed (lan 2)" || { echo "[tunnel] SERVICE INSTALL FAIL:"; cat /tmp/cf_install.log; }`,
+    '    fi',
+    '  }',
     '  $SUDO systemctl restart cloudflared || true',
+    // Xác minh thật sự: service phải active thì mới coi là xong
+    '  sleep 3',
+    '  systemctl is-active cloudflared >/dev/null 2>&1 && echo "[tunnel] service ACTIVE" || echo "[tunnel] SERVICE KHONG CHAY"',
     '  echo "===TUNNEL_DONE==="',
     'fi',
   ];
