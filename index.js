@@ -34,27 +34,28 @@ function tunnelSnippet(token) {
     '  $SUDO install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared',
     'fi',
     'if ! command -v cloudflared >/dev/null 2>&1; then echo "[tunnel] CAI CLOUDFLARED THAT BAI"; else',
-    // KHÔNG gỡ service đang chạy trước khi chắc chắn cài được bản mới — từng làm máy
-    // mất tunnel: uninstall xong install fail (lỗi bị nuốt) → trắng tay, domain 530.
-    // Thử cài đè trước; "already installed" thì restart là đủ (cùng tunnel = cùng token).
-    // Lỗi cloudflared ghi vào log (output của cloudflared không chứa token; dòng lệnh
-    // vẫn giấu token nhờ subshell set +x).
-    `  ( set +x; $SUDO cloudflared service install '${tok}' >/tmp/cf_install.log 2>&1 ) && echo "[tunnel] service installed" || {`,
-    '    if grep -qi "already.*installed" /tmp/cf_install.log; then',
-    '      echo "[tunnel] service da co san — restart la du"',
-    '    else',
-    '      echo "[tunnel] install lan 1 loi:"; cat /tmp/cf_install.log',
-    '      $SUDO cloudflared service uninstall >/dev/null 2>&1 || true',
-    '      $SUDO rm -f /etc/systemd/system/cloudflared.service /etc/systemd/system/cloudflared-update.service /etc/systemd/system/cloudflared-update.timer',
-    '      $SUDO systemctl daemon-reload || true',
-    '      sleep 2',
-    `      ( set +x; $SUDO cloudflared service install '${tok}' >/tmp/cf_install.log 2>&1 ) && echo "[tunnel] service installed (lan 2)" || { echo "[tunnel] SERVICE INSTALL FAIL:"; cat /tmp/cf_install.log; }`,
-    '    fi',
-    '  }',
-    '  $SUDO systemctl restart cloudflared || true',
+    // FIX TRIỆT ĐỂ (14/8): service unit của cloudflared chạy `--token-file /etc/cloudflared/token`.
+    // Từng mất tunnel vì `service install` báo "already installed" nên KHÔNG ghi token, mà
+    // file token lại bị xoá ở đâu đó → restart exit 255. Giải: LUÔN tự ghi token file
+    // (không phụ thuộc service install), chỉ install unit khi CHƯA có, KHÔNG teardown.
+    '  $SUDO mkdir -p /etc/cloudflared',
+    '  if [ ! -f /etc/systemd/system/cloudflared.service ]; then',
+    `    ( set +x; $SUDO cloudflared service install '${tok}' >/tmp/cf_install.log 2>&1 ) && echo "[tunnel] service installed" || { echo "[tunnel] install warn:"; grep -vi token /tmp/cf_install.log | tail -3; }`,
+    '  else echo "[tunnel] service unit da co — chi ghi lai token"; fi',
+    // Ghi token đúng (subshell set +x để không lộ token vào log) — bước quyết định
+    `  ( set +x; printf '%s' '${tok}' | $SUDO tee /etc/cloudflared/token >/dev/null )`,
+    '  $SUDO chmod 600 /etc/cloudflared/token',
+    '  $SUDO systemctl enable cloudflared >/dev/null 2>&1 || true',
+    '  $SUDO systemctl restart cloudflared 2>/dev/null || $SUDO systemctl start cloudflared 2>/dev/null || true',
     // Xác minh thật sự: service phải active thì mới coi là xong
     '  sleep 3',
-    '  systemctl is-active cloudflared >/dev/null 2>&1 && echo "[tunnel] service ACTIVE" || echo "[tunnel] SERVICE KHONG CHAY"',
+    '  if systemctl is-active cloudflared >/dev/null 2>&1; then echo "[tunnel] service ACTIVE"; else',
+    '    echo "[tunnel] restart loi, cai lai sach:"; $SUDO journalctl -u cloudflared --no-pager -n 3 2>&1 | grep -vi token | tail -3',
+    '    $SUDO cloudflared service uninstall >/dev/null 2>&1 || true; $SUDO rm -f /etc/systemd/system/cloudflared*.service /etc/systemd/system/cloudflared*.timer; $SUDO systemctl daemon-reload || true; sleep 2',
+    `    ( set +x; $SUDO cloudflared service install '${tok}' >/dev/null 2>&1 )`,
+    '    $SUDO systemctl enable --now cloudflared 2>/dev/null || true; sleep 3',
+    '    systemctl is-active cloudflared >/dev/null 2>&1 && echo "[tunnel] service ACTIVE (sau cai sach)" || echo "[tunnel] SERVICE KHONG CHAY"',
+    '  fi',
     '  echo "===TUNNEL_DONE==="',
     'fi',
   ];
