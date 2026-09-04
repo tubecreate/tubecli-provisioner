@@ -269,7 +269,10 @@ function sshChangePassword({ ip, port, username, password, newPassword, alsoRoot
       try { conn.end(); } catch {}
       resolve({ ok, error });
     };
-    const timer = setTimeout(() => finish(false, 'timeout khi đổi mật khẩu'), 60000);
+    // Cloud gọi qua Cloudflare Worker, edge cắt request ở ~100 s. Cả chuỗi
+    // (đổi + đăng nhập kiểm) phải gọn hơn hẳn mốc đó, kẻo cloud bị cắt SAU khi
+    // máy đã nhận mật khẩu mới nhưng TRƯỚC khi kịp lưu lại.
+    const timer = setTimeout(() => finish(false, 'timeout khi đổi mật khẩu'), 40000);
     conn.on('ready', () => {
       // chpasswd đọc "user:password" từng dòng. Không pty: cần stdin sạch.
       const cmd = 'SUDO=$([ "$(id -u)" = 0 ] && echo "" || echo "sudo -n"); $SUDO chpasswd';
@@ -310,7 +313,7 @@ function sshCanLogin({ ip, port, username, password }) {
       try { conn.end(); } catch {}
       resolve({ ok, error });
     };
-    const timer = setTimeout(() => finish(false, 'timeout khi đăng nhập thử'), 30000);
+    const timer = setTimeout(() => finish(false, 'timeout khi đăng nhập thử'), 20000);
     conn.on('ready', () => { clearTimeout(timer); finish(true, ''); });
     conn.on('error', (e) => { clearTimeout(timer); finish(false, e.message); });
     conn.connect({
