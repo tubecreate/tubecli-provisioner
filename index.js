@@ -199,7 +199,53 @@ function scoreInstall(output) {
   };
 }
 
-function sshExec({ ip, port, username, password, command, mode, timeoutMs = 15 * 60 * 1000 }) {
+// Gửi log cài đặt về cloud THEO ĐOẠN để người dùng xem như terminal trực tiếp.
+// Gom đệm rồi mới gửi: mỗi dòng một request thì một lượt cài là hàng nghìn request.
+// Lỗi mạng ở đây KHÔNG được làm hỏng lượt cài — log chỉ là thứ để xem.
+const LOG_FLUSH_MS = 1500;
+const LOG_FLUSH_BYTES = 3072;
+
+function makeLogSink(job, mode) {
+  const url = String(job.callback || '').replace(/\/callback(\?.*)?$/, '/log');
+  if (!url || url === job.callback) return { push() {}, async close() {} };
+  let buf = '';
+  let timer = null;
+  let sending = false;
+
+  async function flush() {
+    if (sending || !buf) return;
+    const chunk = buf;
+    buf = '';
+    sending = true;
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret: SECRET, ref: job.ref, mode, chunk }),
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch (e) {
+      // Mất một đoạn log thì thôi; callback cuối vẫn gửi trọn phần đuôi.
+      console.error(`[job ${job.ref}] log chunk lỗi: ${e.message}`);
+    } finally {
+      sending = false;
+    }
+  }
+
+  return {
+    push(text) {
+      buf += text;
+      if (buf.length >= LOG_FLUSH_BYTES) { flush(); return; }
+      if (!timer) timer = setTimeout(() => { timer = null; flush(); }, LOG_FLUSH_MS);
+    },
+    async close() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      await flush();
+    },
+  };
+}
+
+function sshExec({ ip, port, username, password, command, mode, onData, timeoutMs = 15 * 60 * 1000 }) {
   return new Promise((resolve) => {
     const conn = new Client();
     let output = '';
@@ -217,8 +263,14 @@ function sshExec({ ip, port, username, password, command, mode, timeoutMs = 15 *
       connected = true;
       conn.exec(command, { pty: true }, (err, stream) => {
         if (err) { clearTimeout(timer); return finish(false, `exec error: ${err.message}`); }
-        stream.on('data', (d) => { output += d.toString(); if (output.length > 200000) output = output.slice(-150000); });
-        stream.stderr.on('data', (d) => { output += d.toString(); });
+        const take = (d) => {
+          const text = d.toString();
+          output += text;
+          if (output.length > 200000) output = output.slice(-150000);
+          if (onData) { try { onData(text); } catch {} }
+        };
+        stream.on('data', take);
+        stream.stderr.on('data', take);
         stream.on('close', (code) => {
           clearTimeout(timer);
           let ok;
@@ -244,6 +296,7 @@ function sshExec({ ip, port, username, password, command, mode, timeoutMs = 15 *
 async function sshExecWithRetry(job, tries = 5) {
   let last = { ok: false, connected: false, output: '' };
   for (let i = 1; i <= tries; i++) {
+    if (i > 1 && job.onData) job.onData(`\n[provisioner] Thu ket noi SSH lai (lan ${i}/${tries})...\n`);
     last = await sshExec(job);
     if (last.ok || last.connected) return last;
     const wait = 20000 * i;
@@ -347,7 +400,10 @@ async function runJob(job) {
   const command = mode === 'tunnel'
     ? buildTunnelCommand(job.tunnel_token)
     : buildInstallCommand(job.lang, job.tunnel_token, job.tubecli_password, job.origin_hosts);
-  const result = await sshExecWithRetry({ ...job, command, mode });
+  const sink = makeLogSink(job, mode);
+  sink.push(`[provisioner] Bat dau ${mode} tren ${job.ip}:${job.port || 22} (user ${job.username || 'root'})\n`);
+  const result = await sshExecWithRetry({ ...job, command, mode, onData: (t) => sink.push(t) });
+  await sink.close();
 
   const tubecliUrl = `http://${job.ip}:${TUBECLI_PORT}`;
   // Xác minh TubeCLI đã lên (tối đa 2 phút) — bỏ qua với mode tunnel.
