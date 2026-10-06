@@ -30,7 +30,9 @@ function tunnelSnippet(token) {
     '# --- Cloudflare Tunnel ---',
     'if ! command -v cloudflared >/dev/null 2>&1; then',
     '  ARCH=$(uname -m); case "$ARCH" in aarch64|arm64) CFARCH=arm64;; armv7l|armhf) CFARCH=arm;; *) CFARCH=amd64;; esac',
-    '  curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CFARCH}" -o /tmp/cloudflared',
+    // Thẳng GitHub trước (máy thường); quá 180 s hoặc hỏng → qua proxy (Trung Quốc: thẳng ~60 KB/s cho 40 MB).
+    '  CFREL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CFARCH}"',
+    `  curl -fsSL --max-time 180 "$CFREL" -o /tmp/cloudflared || curl -fsSL --max-time 180 "${CN_PROXIES[0]}$CFREL" -o /tmp/cloudflared || curl -fsSL --max-time 180 "${CN_PROXIES[1]}$CFREL" -o /tmp/cloudflared`,
     '  $SUDO install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared',
     'fi',
     'if ! command -v cloudflared >/dev/null 2>&1; then echo "[tunnel] CAI CLOUDFLARED THAT BAI"; else',
@@ -129,6 +131,11 @@ function passwordSnippet(hasPassword) {
   ];
 }
 
+const RAW_INSTALL = 'https://raw.githubusercontent.com/tubecreate/tubecli/main/install.sh';
+const RAW_CN = 'https://raw.githubusercontent.com/tubecreate/tubecli/main/install-cn.sh';
+// Proxy tiền tố cho GitHub — đo từ Bắc Kinh: 0,7–1,3 s cho file raw, 6–9 MB/s cho bản phát hành.
+const CN_PROXIES = ['https://gh-proxy.com/', 'https://ghfast.top/'];
+
 // Lệnh cài: script chính thức 1 dòng, LUÔN chạy non-interactive (bỏ mọi bước
 // hỏi bàn phím như "Choose language") — nếu không sẽ treo tới timeout.
 function buildInstallCommand(lang, tunnelToken, tubecliPassword, originHosts) {
@@ -162,7 +169,17 @@ function buildInstallCommand(lang, tunnelToken, tubecliPassword, originHosts) {
     // Bắt exit code THẬT của bước cài (echo INSTALL_RC) để provisioner không báo
     // nhầm thành công khi install.sh fail (GitHub 404, mạng hỏng, apt lỗi).
     'INSTALL_RC=0',
-    `curl -fsSL https://raw.githubusercontent.com/tubecreate/tubecli/main/install.sh | bash -s -- --non-interactive --lang ${l} || INSTALL_RC=$?`,
+    // Máy ở Trung Quốc đại lục (đo ECS Aliyun Bắc Kinh 6/10/2026): raw.githubusercontent.com bị RESET nên
+    // `curl …/install.sh` chết ngay. Không tới được Google HOẶC raw → install-cn.sh qua proxy GitHub (mirror
+    // Node/npm/pip, cloudflared qua proxy, rồi vẫn chạy đúng install.sh). Nhận nhầm một máy ngoài Trung Quốc
+    // cũng vô hại: install-cn.sh chạy được ở mọi nơi.
+    'TC_CN=0',
+    `if ! curl -fsS --max-time 8 -o /dev/null https://www.google.com/generate_204 2>/dev/null || ! curl -fsS --max-time 10 -o /dev/null ${RAW_INSTALL} 2>/dev/null; then TC_CN=1; echo "[cn] blocked network detected - using install-cn.sh via GitHub proxy"; fi`,
+    'if [ "$TC_CN" = 1 ]; then',
+    `  { curl -fsSL --max-time 40 ${CN_PROXIES[0]}${RAW_CN} || curl -fsSL --max-time 40 ${CN_PROXIES[1]}${RAW_CN}; } | bash -s -- --non-interactive --lang ${l} || INSTALL_RC=$?`,
+    'else',
+    `  curl -fsSL ${RAW_INSTALL} | bash -s -- --non-interactive --lang ${l} || INSTALL_RC=$?`,
+    'fi',
     'echo "===INSTALL_RC=${INSTALL_RC}==="',
     // Các bước sau chỉ best-effort, không ảnh hưởng kết luận thành công của bước cài
     // Mở firewall nếu có ufw
