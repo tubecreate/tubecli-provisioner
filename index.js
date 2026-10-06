@@ -161,7 +161,10 @@ function buildInstallCommand(lang, tunnelToken, tubecliPassword, originHosts) {
     // Font cho trình duyệt (ShardX) — phủ đa ngôn ngữ để tránh chữ □ tofu:
     // CJK (Nhật/Trung/Hàn) + emoji + Noto core (Ả Rập, Thái, Hebrew, Devanagari, Cyrillic…)
     // + Thái/Ả Rập chuyên biệt + font phổ biến (Liberation ~ Arial/Times, DejaVu, FreeFont).
-    '$SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y '
+    // `env`: chạy bằng root thì $SUDO rỗng, mà phép gán đứng SAU một từ đã khai triển không còn là phép gán —
+    // bash coi `DEBIAN_FRONTEND=noninteractive` là tên lệnh («command not found», log máy Bắc Kinh 6/10/2026)
+    // nên font chưa từng được cài trên máy root.
+    '$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y '
       + 'fonts-noto-cjk fonts-noto-color-emoji fonts-noto-core fonts-noto-ui-core '
       + 'fonts-thai-tlwg fonts-kacst fonts-freefont-ttf fonts-liberation fonts-dejavu-core || true',
     // Cài TubeCLI — non-interactive + ngôn ngữ cố định. TUBECLI_PASSWORD đã export
